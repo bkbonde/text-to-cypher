@@ -16,15 +16,17 @@ from typing import Optional, Dict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
-from openai import OpenAI
+from pydantic.v1.fields import FieldInfo as FieldInfoV1
 
 from src.text2cypher_agent import Text2CypherAgent
 from src.utils import get_env_variable
 from src.schema_loader import get_schema
 
 load_dotenv()
+print("envloaded", LLAMA_MODEL:=os.getenv("LLAMA_MODEL"))
 
 # ── FastAPI app ───────────────────────────────────────────────────
 app = FastAPI()
@@ -42,9 +44,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+'''
+# ── Global variables ───────────────────────────────────────────────
+OpenAI Assistant configuration
 OPENAI_ASSISTANT_ID = get_env_variable("OPENAI_ASSISTANT_ID")
-client = OpenAI()
+client = OpenAI()   #“Connect to OpenAI’s cloud and talk to an OpenAI Assistant stored on OpenAI’s servers.”
 
 # persistent thread for the assistant per session
 _ASSISTANT_THREADS: Dict[str, str] = {}
@@ -63,12 +67,22 @@ def get_or_create_agent(provider: str = "openai") -> Text2CypherAgent:
     if _AGENT_INSTANCES[provider] is None:
         _AGENT_INSTANCES[provider] = Text2CypherAgent(provider=provider)
     return _AGENT_INSTANCES[provider]
+'''
+
+# ── Self-hosted agent registry ─────────────────────────────────
+_AGENT: Text2CypherAgent | None = None
+
+def get_or_create_agent() -> Text2CypherAgent:
+    global _AGENT
+    if _AGENT is None:
+        _AGENT = Text2CypherAgent(provider="llama")
+    return _AGENT
 
 # ── request models ────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     query: str
-    session_id: str  # Used for assistant threads only
-    provider: Optional[str] = "openai"  # "openai" or "google"
+    #session_id: str  # Used for assistant threads only
+    #provider: Optional[str] = "openai"  # "openai" or "google"
 
     @field_validator('query')
     @classmethod
@@ -77,10 +91,12 @@ class QueryRequest(BaseModel):
             raise ValueError('Query cannot be empty')
         return v.strip()
 
-
+'''
 class SessionRequest(BaseModel):
     session_id: str
+''' 
 
+'''
 # --------------------------------------------------------------------
 # Health check endpoints
 # --------------------------------------------------------------------
@@ -234,4 +250,68 @@ if os.getenv("NODE_ENV") == "production":
     ui_dist = Path(__file__).parent.parent / "ui" / "dist"
     if ui_dist.exists():
         # API routes will take precedence over static files
+        app.mount("/", StaticFiles(directory=str(ui_dist), html=True), name="static") 
+
+''' 
+
+@app.get("/health", tags=["ops"])
+async def health_check():
+    return {"status": "healthy"}
+
+
+@app.get("/ready", tags=["ops"])
+async def readiness_check():
+    try:
+        schema = get_schema()
+        return {
+            "ready": True,
+            "node_types": len(schema.get("NodeTypes", {})),
+            "relationship_types": len(schema.get("RelationshipTypes", {})),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Not ready: {e}")
+
+
+# ── Schema ─────────────────────────────────────────────────────
+@app.get("/api/schema", tags=["schema"])
+async def fetch_schema():
+    return get_schema()
+
+
+# ── Text-to-Cypher Agent ───────────────────────────────────────
+@app.post("/api/ask", tags=["llm-agent"])
+async def ask_llm_agent(req: QueryRequest):
+    try:
+        agent = get_or_create_agent()
+        cypher = await run_in_threadpool(
+            agent.respond,
+            req.query
+        )
+
+        return {"answer": cypher}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ───────────────────────────────────────────────────────────────
+# Chat history
+# ───────────────────────────────────────────────────────────────
+@app.get("/api/history", tags=["shared"])
+async def get_shared_history():
+    agent = get_or_create_agent()
+    return {"history": agent.get_history()}
+
+@app.post("/api/clear", tags=["shared"])
+async def clear_shared_history():
+    agent = get_or_create_agent()
+    agent.clear_history()
+    return {"status": "cleared"}
+
+
+# ── Serve UI in production ─────────────────────────────────────
+if os.getenv("NODE_ENV") == "production":
+    from fastapi.staticfiles import StaticFiles
+
+    ui_dist = Path(__file__).parent.parent / "ui" / "dist"
+    if ui_dist.exists():
         app.mount("/", StaticFiles(directory=str(ui_dist), html=True), name="static")
