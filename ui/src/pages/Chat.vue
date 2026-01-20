@@ -225,7 +225,7 @@ function hideSidebar() {
     sidebarVisible.value = false;
   }
 }
-
+/*
 async function askAgent() {
   if (!query.value.trim()) return;
 
@@ -263,6 +263,39 @@ async function askAgent() {
       role: 'assistant',
       content: 'Error: ' + errorMsg,
       provider: selectedProvider.value
+    });
+  } finally {
+    loading.value = false;
+  }
+}
+*/
+
+async function askAgent() {
+  if (!query.value.trim()) return;
+
+  const question = query.value;
+  messages.value.push({ role: 'user', content: question });
+  query.value = '';
+  loading.value = true;
+
+  const endpoint = '/api/ask';
+
+  const payload = {
+    query: question
+  };
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    messages.value.push({
+      role: 'assistant',
+      content: data.answer,
     });
   } finally {
     loading.value = false;
